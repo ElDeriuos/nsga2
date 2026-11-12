@@ -1,0 +1,27 @@
+name = "nsga2"
+version = "0.1.0"
+license = "MIT"
+
+[build]
+auto-executables = false
+auto-examples = false
+# shortcut: tests listed by hand so fpm skips test/xfail (expected-failure programs run under CMake/ctest only)
+auto-tests = false
+
+[library]
+source-dir = "src"
+
+[[test]]
+name = "test_operators"
+source-dir = "test"
+main = "test_operators.f90"
+
+[[test]]
+name = "test_benchmarks"
+source-dir = "test"
+main = "test_benchmarks.f90"
+
+[[test]]
+name = "test_errors"
+source-dir = "test"
+main = "test_errors.f90"
