@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(nsga2 VERSION 0.1.0 LANGUAGES Fortran)
+project(nsga2 VERSION 0.2.0 LANGUAGES Fortran)
 
 add_library(nsga2 src/nsga2.f90)
 set_target_properties(nsga2 PROPERTIES Fortran_MODULE_DIRECTORY ${PROJECT_BINARY_DIR}/mod)

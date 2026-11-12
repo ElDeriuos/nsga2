@@ -2,7 +2,7 @@
 program test_errors
   use, intrinsic :: iso_fortran_env, only: dp => real64
   use nsga2
-  use benchmarks, only: zdt1, bnh, bnh_g
+  use benchmarks, only: zdt1, bnh, bnh_g, one_min_max, knapsack_g, gear
   use test_check, only: check
   implicit none
 
@@ -49,6 +49,15 @@ program test_errors
 
   call nsga2_optimize(bnh, 2, lo(:2), hi(:2), nsga2_options(), res, constraints=bnh_g, n_con=0, stat=stat, errmsg=msg)
   call check(rejected('n_con'), 'n_con < 1 is rejected')
+
+  call nsga2_optimize(one_min_max, 2, 0, nsga2_options(), res, stat=stat, errmsg=msg)
+  call check(rejected('n_bits'), 'binary: n_bits < 1 is rejected')
+
+  call nsga2_optimize(one_min_max, 2, 8, nsga2_options(), res, constraints=knapsack_g, stat=stat, errmsg=msg)
+  call check(rejected('n_con'), 'binary: constraints without n_con are rejected')
+
+  call nsga2_optimize(gear, 2, [60, 12], [12, 60], nsga2_options(), res, stat=stat, errmsg=msg)
+  call check(rejected('lower'), 'integer: lower > upper is rejected')
 
 contains
 

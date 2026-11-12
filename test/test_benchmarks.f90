@@ -2,6 +2,8 @@
 !> settings (population 100, 250 generations unless noted), all returned solutions feasible, and
 !> IGD to the true front below a limit set at about 2x the worst of 5 calibration seeds.
 !> Reference fronts are analytic where known, else brute force over a grid of the decision space.
+!> Binary and integer problems have discrete fronts, computed exactly (analytic or by enumeration);
+!> there the limit is the number of exact front points found.
 program test_benchmarks
   use, intrinsic :: iso_fortran_env, only: dp => real64
   use nsga2
@@ -91,7 +93,72 @@ program test_benchmarks
                'OSY: all feasible, hypervolume > 1.2x that of random search with 8x the evaluations')
   end block
 
+  ! --- bit strings (binary encoding)
+  block
+    type(nsga2_result) :: res
+    real(dp) :: f(2)
+    integer :: i
+    logical :: same
+    call seed_rng(1)
+    call nsga2_optimize(one_min_max, 2, 20, nsga2_options(), res)
+    same = size(res%bits, 1) == 20 .and. size(res%bits, 2) == size(res%f, 2)
+    do i = 1, size(res%f, 2)
+      call one_min_max(res%bits(:, i), f)
+      same = same .and. all(f == res%f(:, i))
+    end do
+    call check(same, 'binary: res%f holds the objective values of res%bits')
+    call check(covers(res%f, front_lotz(20)), 'OneMinMax (20 bits): all 21 points of the front found')
+    call seed_rng(2)
+    call nsga2_optimize(lotz, 2, 20, nsga2_options(), res)
+    call check(covers(res%f, front_lotz(20)), 'LOTZ (20 bits): all 21 points of the front found')
+    ! deceptive: runs stall at g = 12..16 (the true front has g = 10); random populations score IGD 3.7..5.2
+    call seed_rng(3)
+    call nsga2_optimize(zdt5, 2, 80, nsga2_options(), res)
+    call check(igd(res%f, front_zdt5()) < 1.2_dp, 'ZDT5 (80 bits, deceptive): IGD < 1.200 to the true front')
+    call seed_rng(4)
+    call nsga2_optimize(knapsack, 2, 20, nsga2_options(), res, constraints=knapsack_g, n_con=2)
+    call check(all(res%cv == 0) .and. igd(res%f, front_knapsack()) < 10._dp, &
+               'knapsack (20 items, 2 knapsacks): all feasible, IGD < 10 to the exact front')
+  end block
+
+  ! --- integer encoding
+  block
+    type(nsga2_result) :: res
+    real(dp), allocatable :: ref(:,:)
+    real(dp) :: f(2)
+    integer :: i
+    logical :: same
+    call seed_rng(5)
+    call nsga2_optimize(gear, 2, [12, 12, 12, 12], [60, 60, 60, 60], nsga2_options(), res)
+    same = size(res%ints, 1) == 4 .and. size(res%ints, 2) == size(res%f, 2) .and. all(res%ints >= 12 .and. res%ints <= 60)
+    do i = 1, size(res%f, 2)
+      call gear(res%ints(:, i), f)
+      same = same .and. all(f == res%f(:, i))
+    end do
+    call check(same, 'integer: res%ints within bounds, res%f holds their objective values')
+    ! the exact front has 28 points; 5 calibration seeds found 23..25, random populations 0
+    ref = front_gear()
+    call check(found(res%f, ref) >= 18, 'gear train (4 integers): at least 18 of the 28 exact front points found')
+  end block
+
 contains
+
+  !> Is every reference point among the solutions' objective vectors? (discrete fronts)
+  logical function covers(f, ref)
+    real(dp), intent(in) :: f(:,:), ref(:,:)
+    covers = found(f, ref) == size(ref, 2)
+  end function covers
+
+  !> How many reference points are among the solutions' objective vectors (relative tolerance 1e-9).
+  integer function found(f, ref)
+    real(dp), intent(in) :: f(:,:), ref(:,:)
+    integer :: j
+    found = 0
+    do j = 1, size(ref, 2)
+      if (any(all(abs(f - spread(ref(:, j), 2, size(f, 2))) <= 1e-9_dp * abs(spread(ref(:, j), 2, size(f, 2))), &
+                  dim=1))) found = found + 1
+    end do
+  end function found
 
   subroutine solve(name, f, n_obj, lower, upper, ref, limit, seed, generations, g, nc)
     character(*), intent(in) :: name

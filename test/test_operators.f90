@@ -69,6 +69,17 @@ program test_operators
     call check(near(x(:2), [0.163133825081603_dp, 0.833030334328620_dp]), 'polynomial mutation matches the worked example')
   end block
 
+  ! --- two-point crossover (binary genes, as in Deb's NSGA-II code): genes cut1+1 .. cut2 are exchanged
+  block
+    real(dp) :: c1(6), c2(6)
+    call two_point_crossover([1._dp, 1._dp, 1._dp, 1._dp, 1._dp, 1._dp], [0._dp, 0._dp, 0._dp, 0._dp, 0._dp, 0._dp], &
+                             2, 4, c1, c2)
+    call check(all(c1 == [1, 1, 0, 0, 1, 1]) .and. all(c2 == [0, 0, 1, 1, 0, 0]), &
+               'two-point crossover exchanges genes cut1+1 .. cut2')
+    call two_point_crossover([1._dp, 0._dp, 1._dp], [0._dp, 1._dp, 1._dp], 3, 3, c1(:3), c2(:3))
+    call check(all(c1(:3) == [1, 0, 1]) .and. all(c2(:3) == [0, 1, 1]), 'two-point crossover with cut1 = cut2 copies the parents')
+  end block
+
   ! --- quality indicators
   call check(near([igd(reshape([0._dp, 0._dp], [2, 1]), reshape([0._dp,0._dp, 3._dp,4._dp], [2, 2]))], [2.5_dp]), &
              'IGD = mean distance from each reference point to the nearest solution: (0 + 5)/2')

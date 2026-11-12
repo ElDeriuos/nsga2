@@ -4,9 +4,13 @@ module nsga2
   private
 
   public :: dominates, nondominated_rank, crowding_distance, crowded_tournament
-  public :: sbx_crossover, polynomial_mutation
+  public :: sbx_crossover, polynomial_mutation, two_point_crossover
   public :: igd, hypervolume_2d
   public :: nsga2_optimize, objective_function, constraint_function
+  public :: binary_objective_function, binary_constraint_function
+  public :: integer_objective_function, integer_constraint_function
+
+  integer, parameter :: ENC_REAL = 1, ENC_BINARY = 2, ENC_INTEGER = 3
 
   !> Settings for one run; every field has a usable default (Deb et al. 2002).
   type, public :: nsga2_options
@@ -18,12 +22,15 @@ module nsga2
     real(dp) :: eta_m           = 20       !< polynomial mutation distribution index
   end type nsga2_options
 
-  !> The non-dominated (rank-1) solutions of the final population.
+  !> The non-dominated (rank-1) solutions of the final population. The decision vectors are in
+  !> x, bits or ints, depending on the encoding.
   type, public :: nsga2_result
     integer :: generations = 0
-    real(dp), allocatable :: x(:,:)   !< (n_var, n_front) decision vectors
-    real(dp), allocatable :: f(:,:)   !< (n_obj, n_front) objective values
-    real(dp), allocatable :: cv(:)    !< (n_front) constraint violation, 0 = feasible
+    real(dp), allocatable :: x(:,:)      !< (n_var, n_front) decision vectors
+    logical, allocatable :: bits(:,:)    !< (n_bits, n_front) bit strings
+    integer, allocatable :: ints(:,:)    !< (n_var, n_front) integer vectors
+    real(dp), allocatable :: f(:,:)      !< (n_obj, n_front) objective values
+    real(dp), allocatable :: cv(:)       !< (n_front) constraint violation, 0 = feasible
   end type nsga2_result
 
   abstract interface
@@ -40,14 +47,48 @@ module nsga2
       real(dp), intent(in) :: x(:)
       real(dp), intent(out) :: g(:)
     end subroutine constraint_function
+
+    !> Fill f(1:n_obj) with the objective values of a bit string; all objectives are minimized.
+    subroutine binary_objective_function(bits, f)
+      import :: dp
+      logical, intent(in) :: bits(:)
+      real(dp), intent(out) :: f(:)
+    end subroutine binary_objective_function
+
+    !> Fill g(1:n_con) for a bit string; it is feasible when every g <= 0.
+    subroutine binary_constraint_function(bits, g)
+      import :: dp
+      logical, intent(in) :: bits(:)
+      real(dp), intent(out) :: g(:)
+    end subroutine binary_constraint_function
+
+    !> Fill f(1:n_obj) with the objective values of the integer vector k; all objectives are minimized.
+    subroutine integer_objective_function(k, f)
+      import :: dp
+      integer, intent(in) :: k(:)
+      real(dp), intent(out) :: f(:)
+    end subroutine integer_objective_function
+
+    !> Fill g(1:n_con) for the integer vector k; it is feasible when every g <= 0.
+    subroutine integer_constraint_function(k, g)
+      import :: dp
+      integer, intent(in) :: k(:)
+      real(dp), intent(out) :: g(:)
+    end subroutine integer_constraint_function
   end interface
+
+  !> NSGA-II. Real or integer variables: (objectives, n_obj, lower, upper, opts, res, ...), with
+  !> real or integer bounds; bit strings: (objectives, n_obj, n_bits, opts, res, ...).
+  interface nsga2_optimize
+    module procedure nsga2_real, nsga2_integer, nsga2_binary
+  end interface nsga2_optimize
 
 contains
 
   !> NSGA-II (Deb, Pratap, Agarwal, Meyarivan 2002) on x in [lower, upper] with n_obj objectives,
-  !> optionally subject to n_con constraints g(x) <= 0 (Deb's constrained dominance).
+  !> optionally subject to n_con constraints g(x) <= 0 (Deb's constrained dominance). Result in res%x.
   !> Invalid input: sets stat /= 0 and errmsg if stat is present, else error stop.
-  subroutine nsga2_optimize(objectives, n_obj, lower, upper, opts, res, constraints, n_con, stat, errmsg)
+  subroutine nsga2_real(objectives, n_obj, lower, upper, opts, res, constraints, n_con, stat, errmsg)
     procedure(objective_function) :: objectives
     integer, intent(in) :: n_obj
     real(dp), intent(in) :: lower(:), upper(:)
@@ -57,6 +98,59 @@ contains
     integer, intent(in), optional :: n_con
     integer, intent(out), optional :: stat
     character(:), allocatable, intent(out), optional :: errmsg
+
+    call run(ENC_REAL, n_obj, lower, upper, opts, res, n_con, stat, errmsg, obj_r=objectives, con_r=constraints)
+  end subroutine nsga2_real
+
+  !> NSGA-II on integer vectors k in [lower, upper]: SBX and polynomial mutation on the integers
+  !> as reals, then rounding (as pymoo does). Result in res%ints.
+  subroutine nsga2_integer(objectives, n_obj, lower, upper, opts, res, constraints, n_con, stat, errmsg)
+    procedure(integer_objective_function) :: objectives
+    integer, intent(in) :: n_obj
+    integer, intent(in) :: lower(:), upper(:)
+    type(nsga2_options), intent(in) :: opts
+    type(nsga2_result), intent(out) :: res
+    procedure(integer_constraint_function), optional :: constraints
+    integer, intent(in), optional :: n_con
+    integer, intent(out), optional :: stat
+    character(:), allocatable, intent(out), optional :: errmsg
+
+    call run(ENC_INTEGER, n_obj, real(lower, dp), real(upper, dp), opts, res, n_con, stat, errmsg, &
+             obj_i=objectives, con_i=constraints)
+  end subroutine nsga2_integer
+
+  !> NSGA-II on bit strings of length n_bits: two-point crossover and bit-flip mutation, as in
+  !> Deb's NSGA-II code. Result in res%bits.
+  subroutine nsga2_binary(objectives, n_obj, n_bits, opts, res, constraints, n_con, stat, errmsg)
+    procedure(binary_objective_function) :: objectives
+    integer, intent(in) :: n_obj, n_bits
+    type(nsga2_options), intent(in) :: opts
+    type(nsga2_result), intent(out) :: res
+    procedure(binary_constraint_function), optional :: constraints
+    integer, intent(in), optional :: n_con
+    integer, intent(out), optional :: stat
+    character(:), allocatable, intent(out), optional :: errmsg
+
+    call run(ENC_BINARY, n_obj, spread(0._dp, 1, n_bits), spread(1._dp, 1, n_bits), opts, res, n_con, stat, errmsg, &
+             obj_b=objectives, con_b=constraints)
+  end subroutine nsga2_binary
+
+  !> The NSGA-II loop shared by all encodings. Genes are stored as real(dp): bits as 0/1,
+  !> integers as whole numbers.
+  subroutine run(enc, n_obj, lower, upper, opts, res, n_con, stat, errmsg, obj_r, obj_b, obj_i, con_r, con_b, con_i)
+    integer, intent(in) :: enc, n_obj
+    real(dp), intent(in) :: lower(:), upper(:)
+    type(nsga2_options), intent(in) :: opts
+    type(nsga2_result), intent(inout) :: res
+    integer, intent(in), optional :: n_con
+    integer, intent(out), optional :: stat
+    character(:), allocatable, intent(out), optional :: errmsg
+    procedure(objective_function), optional :: obj_r
+    procedure(binary_objective_function), optional :: obj_b
+    procedure(integer_objective_function), optional :: obj_i
+    procedure(constraint_function), optional :: con_r
+    procedure(binary_constraint_function), optional :: con_b
+    procedure(integer_constraint_function), optional :: con_i
     real(dp), allocatable :: x(:,:), f(:,:), cv(:), crowd(:), xa(:,:), fa(:,:), cva(:), crowd_all(:)
     integer, allocatable :: rank(:), rank_all(:), keep(:)
     character(:), allocatable :: msg
@@ -78,8 +172,12 @@ contains
     allocate(x(n, np), f(n_obj, np), cv(np), xa(n, 2*np), fa(n_obj, 2*np), cva(2*np))
 
     call random_number(x)
-    x = spread(lower, 2, np) + x * spread(upper - lower, 2, np)
-    call evaluate(x, f, cv)
+    if (enc == ENC_REAL) then
+      x = spread(lower, 2, np) + x * spread(upper - lower, 2, np)
+    else
+      x = spread(lower, 2, np) + floor(x * spread(upper - lower + 1, 2, np))
+    end if
+    call evaluate(enc, x, f, cv, n_con, obj_r, obj_b, obj_i, con_r, con_b, con_i)
     rank = nondominated_rank(f, cv)
     crowd = crowding_by_front(f, rank)
 
@@ -88,7 +186,7 @@ contains
       fa(:, :np) = f
       cva(:np) = cv
       xa(:, np+1:) = offspring()
-      call evaluate(xa(:, np+1:), fa(:, np+1:), cva(np+1:))
+      call evaluate(enc, xa(:, np+1:), fa(:, np+1:), cva(np+1:), n_con, obj_r, obj_b, obj_i, con_r, con_b, con_i)
       rank_all = nondominated_rank(fa, cva)
       crowd_all = crowding_by_front(fa, rank_all)
       ! elitist survival: best np of parents + children by rank, then by crowding distance
@@ -103,7 +201,14 @@ contains
 
     keep = pack([(i, i = 1, np)], rank == 1)
     res%generations = opts%max_generations
-    res%x = x(:, keep)
+    select case (enc)
+    case (ENC_BINARY)
+      res%bits = x(:, keep) > 0.5_dp
+    case (ENC_INTEGER)
+      res%ints = nint(x(:, keep))
+    case default
+      res%x = x(:, keep)
+    end select
     res%f = f(:, keep)
     res%cv = cv(keep)
 
@@ -116,12 +221,12 @@ contains
       if (n_obj < 1) then
         msg = 'n_obj must be >= 1'
       else if (size(lower) < 1) then
-        msg = 'need at least one decision variable (size(lower) >= 1)'
+        msg = 'need at least one decision variable (size(lower) or n_bits >= 1)'
       else if (size(lower) /= size(upper)) then
         msg = 'lower and upper must have the same size'
       else if (any(lower > upper)) then
         msg = 'lower must be <= upper'
-      else if (present(constraints) .neqv. present(n_con)) then
+      else if ((present(con_r) .or. present(con_b) .or. present(con_i)) .neqv. present(n_con)) then
         msg = 'constraints and n_con must be given together'
       else if (opts%population_size < 2) then
         msg = 'population_size must be >= 2'
@@ -141,36 +246,27 @@ contains
       end if
     end function invalid_input
 
-    subroutine evaluate(xs, fs, cvs)
-      real(dp), intent(in) :: xs(:,:)
-      real(dp), intent(out) :: fs(:,:), cvs(:)
-      integer :: j
-      do j = 1, size(xs, 2)
-        call objectives(xs(:, j), fs(:, j))
-      end do
-      cvs = 0
-      ! passed on, not called here: gfortran 16 wrongly flags a call of an optional dummy procedure
-      ! from an internal procedure as an implicit interface (-Wimplicit-interface)
-      if (present(constraints)) cvs = violation(constraints, n_con, xs)
-    end subroutine evaluate
-
-    !> np children: crowded binary tournaments, SBX on pairs, polynomial mutation.
+    !> np children: crowded binary tournaments, then crossover and mutation for the encoding.
     function offspring() result(children)
-      real(dp) :: children(n, np), r(2, np + 1), u, uc(n), mc(n), sc(n), c1(n), c2(n)
+      real(dp) :: children(n, np), r(2, np + 1), u, cut(2), uc(n), mc(n), sc(n), c1(n), c2(n)
       integer :: parents(np + 1), j
       call random_number(r)
       parents = crowded_tournament(rank, crowd, min(np, 1 + int(r * np)))
       do j = 1, np, 2
         call random_number(u)
-        if (u < opts%crossover_rate) then
+        if (u >= opts%crossover_rate) then
+          c1 = x(:, parents(j))
+          c2 = x(:, parents(j+1))
+        else if (enc == ENC_BINARY) then
+          call random_number(cut)
+          call two_point_crossover(x(:, parents(j)), x(:, parents(j+1)), &
+                                   minval(int(cut * (n + 1))), maxval(int(cut * (n + 1))), c1, c2)
+        else
           call random_number(uc)
           call random_number(mc)
           call random_number(sc)
           call sbx_crossover(x(:, parents(j)), x(:, parents(j+1)), mc < 0.5_dp, uc, lower, upper, &
                              opts%eta_c, c1, c2, swap=sc < 0.5_dp)
-        else
-          c1 = x(:, parents(j))
-          c2 = x(:, parents(j+1))
         end if
         call mutate(c1)
         call mutate(c2)
@@ -183,24 +279,51 @@ contains
       real(dp), intent(inout) :: c(:)
       real(dp) :: um(n), r(n)
       call random_number(um)
-      call random_number(r)
-      call polynomial_mutation(c, um < pm, r, lower, upper, opts%eta_m)
+      if (enc == ENC_BINARY) then
+        where (um < pm) c = 1 - c
+      else
+        call random_number(r)
+        call polynomial_mutation(c, um < pm, r, lower, upper, opts%eta_m)
+        if (enc == ENC_INTEGER) c = anint(c)   ! crossover and mutation both act before this rounding
+      end if
     end subroutine mutate
 
-  end subroutine nsga2_optimize
+  end subroutine run
 
-  !> Total constraint violation sum(max(0, g)) of each column of xs.
-  function violation(constraints, n_con, xs) result(cv)
-    procedure(constraint_function) :: constraints
-    integer, intent(in) :: n_con
+  !> Objective values and total constraint violation sum(max(0, g)) of each column of xs.
+  !> A module procedure on purpose: gfortran 16 wrongly flags a call of an optional dummy
+  !> procedure made from an internal procedure as an implicit interface (-Wimplicit-interface).
+  subroutine evaluate(enc, xs, fs, cvs, n_con, obj_r, obj_b, obj_i, con_r, con_b, con_i)
+    integer, intent(in) :: enc
     real(dp), intent(in) :: xs(:,:)
-    real(dp) :: cv(size(xs, 2)), g(n_con)
+    real(dp), intent(out) :: fs(:,:), cvs(:)
+    integer, intent(in), optional :: n_con
+    procedure(objective_function), optional :: obj_r
+    procedure(binary_objective_function), optional :: obj_b
+    procedure(integer_objective_function), optional :: obj_i
+    procedure(constraint_function), optional :: con_r
+    procedure(binary_constraint_function), optional :: con_b
+    procedure(integer_constraint_function), optional :: con_i
+    real(dp), allocatable :: g(:)
     integer :: j
+
+    cvs = 0
+    if (present(n_con)) allocate(g(n_con))
     do j = 1, size(xs, 2)
-      call constraints(xs(:, j), g)
-      cv(j) = sum(max(0._dp, g))
+      select case (enc)
+      case (ENC_BINARY)
+        call obj_b(xs(:, j) > 0.5_dp, fs(:, j))
+        if (present(n_con)) call con_b(xs(:, j) > 0.5_dp, g)
+      case (ENC_INTEGER)
+        call obj_i(nint(xs(:, j)), fs(:, j))
+        if (present(n_con)) call con_i(nint(xs(:, j)), g)
+      case default
+        call obj_r(xs(:, j), fs(:, j))
+        if (present(n_con)) call con_r(xs(:, j), g)
+      end select
+      if (present(n_con)) cvs(j) = sum(max(0._dp, g))
     end do
-  end function violation
+  end subroutine evaluate
 
   !> Crowding distance computed separately within each front.
   pure function crowding_by_front(f, rank) result(crowd)
@@ -325,6 +448,16 @@ contains
       end if
     end function spread_factor
   end subroutine sbx_crossover
+
+  !> Children swap genes cut1+1 .. cut2 (0 <= cut1 <= cut2 <= size(p1)); used on bit strings.
+  pure subroutine two_point_crossover(p1, p2, cut1, cut2, c1, c2)
+    real(dp), intent(in) :: p1(:), p2(:)
+    integer, intent(in) :: cut1, cut2
+    real(dp), intent(out) :: c1(:), c2(:)
+
+    c1 = [p1(:cut1), p2(cut1+1:cut2), p1(cut2+1:)]
+    c2 = [p2(:cut1), p1(cut1+1:cut2), p2(cut2+1:)]
+  end subroutine two_point_crossover
 
   !> Binary tournaments: each column of contestants (2 x n_picks) is one tournament.
   !> Lower rank wins; on equal rank the larger crowding distance wins; then the first contestant.

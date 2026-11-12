@@ -16,8 +16,19 @@ module benchmarks
   public :: front_sch, front_fon, front_zdt1, front_zdt2, front_zdt3, front_zdt6
   public :: front_dtlz1, front_sphere, front_dtlz5, front_dtlz7
   public :: grid_front, nondominated_points
+  public :: one_min_max, lotz, zdt5, knapsack, knapsack_g, front_lotz, front_zdt5, front_knapsack
+  public :: gear, front_gear
 
   real(dp), parameter :: pi = acos(-1._dp)
+
+  !> Knapsack instance: profit and weight of item j in knapsack i, random integers in [10, 100]
+  !> drawn with Python's random.Random(1999) (profits row by row, then weights).
+  integer, parameter :: kp_profit(20, 2) = reshape([ &
+    24, 55, 28, 82, 73, 42, 89, 82, 35, 31, 86, 36, 92, 16, 61, 60, 21, 89, 16, 28, &
+    45, 17, 100, 32, 56, 75, 76, 28, 14, 18, 78, 77, 28, 17, 40, 83, 44, 13, 77, 65], [20, 2])
+  integer, parameter :: kp_weight(20, 2) = reshape([ &
+    48, 14, 31, 49, 16, 25, 70, 70, 86, 84, 24, 55, 11, 57, 75, 81, 27, 67, 43, 48, &
+    19, 65, 29, 100, 36, 45, 89, 88, 37, 95, 69, 36, 19, 72, 48, 80, 47, 84, 26, 85], [20, 2])
 
   abstract interface
     subroutine vector_function(x, y)
@@ -293,7 +304,126 @@ contains
     g(6) = 4 - (x(5) - 3)**2 - x(6)
   end subroutine osy_g
 
+  ! ================================================================ bit strings
+
+  !> OneMinMax (Giel & Lehre 2010): f = (number of ones, number of zeros); every string is Pareto optimal.
+  subroutine one_min_max(bits, f)
+    logical, intent(in) :: bits(:)
+    real(dp), intent(out) :: f(:)
+    f(1) = count(bits)
+    f(2) = size(bits) - count(bits)
+  end subroutine one_min_max
+
+  !> LOTZ, Leading Ones Trailing Zeros (Laumanns, Thiele & Zitzler 2004), as minimization:
+  !> f = (n - leading ones, n - trailing zeros). Pareto set: 1...10...0.
+  subroutine lotz(bits, f)
+    logical, intent(in) :: bits(:)
+    real(dp), intent(out) :: f(:)
+    integer :: n
+    n = size(bits)
+    f(1) = n - (findloc([bits, .false.], .false., dim=1) - 1)          ! sentinels: all ones / all zeros
+    f(2) = n - (n + 1 - findloc([.true., bits], .true., dim=1, back=.true.))
+  end subroutine lotz
+
+  !> ZDT5 (deceptive): 80 bits = x1 (30 bits) + ten 5-bit blocks; u = number of ones.
+  !> f1 = 1 + u(x1), f2 = g / f1 with g = sum over the blocks of (2 + u if u < 5, else 1).
+  subroutine zdt5(bits, f)
+    logical, intent(in) :: bits(:)
+    real(dp), intent(out) :: f(:)
+    integer :: i, u
+    real(dp) :: g
+    g = 0
+    do i = 31, size(bits), 5
+      u = count(bits(i:i+4))
+      g = g + merge(1, 2 + u, u == 5)
+    end do
+    f(1) = 1 + count(bits(:30))
+    f(2) = g / f(1)
+  end subroutine zdt5
+
+  !> Bi-objective 0/1 knapsack (Zitzler & Thiele 1999), 20 items, 2 knapsacks: maximize the profit
+  !> in each knapsack (here: minimize its negative).
+  subroutine knapsack(bits, f)
+    logical, intent(in) :: bits(:)
+    real(dp), intent(out) :: f(:)
+    f(:2) = -matmul(merge(1, 0, bits), kp_profit)
+  end subroutine knapsack
+
+  !> Capacity of each knapsack: half its total weight (Zitzler & Thiele 1999).
+  subroutine knapsack_g(bits, g)
+    logical, intent(in) :: bits(:)
+    real(dp), intent(out) :: g(:)
+    g(:2) = matmul(merge(1, 0, bits), kp_weight) - 0.5_dp * sum(kp_weight, dim=1)
+  end subroutine knapsack_g
+
+  ! ================================================================ integers
+
+  !> Gear train (Deb, Pratap & Moitra 2000): teeth k in [12, 60]^4; minimize the squared error to
+  !> the gear ratio 1/6.931 and the size of the largest gear.
+  subroutine gear(k, f)
+    integer, intent(in) :: k(:)
+    real(dp), intent(out) :: f(:)
+    f(1) = (1 / 6.931_dp - real(k(1) * k(2), dp) / (k(3) * k(4)))**2
+    f(2) = maxval(k)
+  end subroutine gear
+
   ! ================================================================ analytic reference fronts
+
+  !> Gear train: the exact front, by enumerating all 49^4 designs (smallest error per largest gear).
+  function front_gear() result(r)
+    real(dp), allocatable :: r(:,:)
+    real(dp) :: best(2, 12:60), f(2)
+    integer :: a, b, c, d
+    best(1, :) = huge(1._dp)
+    best(2, :) = [(real(a, dp), a = 12, 60)]
+    do a = 12, 60
+      do b = 12, 60
+        do c = 12, 60
+          do d = 12, 60
+            call gear([a, b, c, d], f)
+            best(1, nint(f(2))) = min(best(1, nint(f(2))), f(1))
+          end do
+        end do
+      end do
+    end do
+    r = nondominated_points(best)
+  end function front_gear
+
+  !> Knapsack: the exact front, by enumerating all 2^20 item subsets.
+  function front_knapsack() result(r)
+    real(dp), allocatable :: r(:,:), pts(:,:)
+    real(dp) :: g(2)
+    logical :: bits(20)
+    integer :: mask, m, i
+    allocate(pts(2, 2**20))
+    m = 0
+    do mask = 0, 2**20 - 1
+      bits = [(btest(mask, i), i = 0, 19)]
+      call knapsack_g(bits, g)
+      if (all(g <= 0)) then
+        m = m + 1
+        call knapsack(bits, pts(:, m))
+      end if
+    end do
+    r = nondominated_points(pts(:, :m))
+  end function front_knapsack
+
+  !> ZDT5: g = 10, so f2 = 10 / f1 for f1 = 1 .. 31 (31 points).
+  function front_zdt5() result(r)
+    real(dp) :: r(2, 31)
+    integer :: k
+    r(1, :) = [(real(k, dp), k = 1, 31)]
+    r(2, :) = 10 / r(1, :)
+  end function front_zdt5
+
+  !> OneMinMax and LOTZ on n bits: the n + 1 points (k, n - k).
+  function front_lotz(n) result(r)
+    integer, intent(in) :: n
+    real(dp) :: r(2, n + 1)
+    integer :: k
+    r(1, :) = [(real(k, dp), k = 0, n)]
+    r(2, :) = n - r(1, :)
+  end function front_lotz
 
   !> SCH: x in [0, 2] -> (x^2, (x-2)^2).
   function front_sch(n) result(r)
